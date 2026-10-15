@@ -1101,6 +1101,7 @@ describe('identifier', () => {
           parameters: [],
           tables: [],
           columns: [],
+          where: true,
         },
       ];
 
@@ -1121,6 +1122,7 @@ describe('identifier', () => {
           parameters: [],
           tables: [],
           columns: [],
+          where: true,
         },
       ];
       expect(actual).to.eql(expected);
@@ -1138,6 +1140,7 @@ describe('identifier', () => {
           parameters: [],
           tables: [],
           columns: [],
+          where: true,
         },
       ];
 
@@ -1814,6 +1817,131 @@ describe('identifier', () => {
         );
         expect(result.limit).to.equal(false);
       });
+    });
+  });
+
+  describe('WHERE detection', () => {
+    it('should set where=true for UPDATE with WHERE', () => {
+      const [result] = identify('UPDATE users SET active = 0 WHERE id = 1');
+      expect(result.where).to.equal(true);
+    });
+
+    it('should set where=false for UPDATE without WHERE', () => {
+      const [result] = identify('UPDATE users SET active = 0');
+      expect(result.where).to.equal(false);
+    });
+
+    it('should set where=true for DELETE with WHERE', () => {
+      const [result] = identify('DELETE FROM users WHERE id = 1');
+      expect(result.where).to.equal(true);
+    });
+
+    it('should set where=false for DELETE without WHERE', () => {
+      const [result] = identify('DELETE FROM users');
+      expect(result.where).to.equal(false);
+    });
+
+    it('should detect WHERE case-insensitively', () => {
+      const [result] = identify('delete from users where id = 1');
+      expect(result.where).to.equal(true);
+    });
+
+    it('should set where=true for WHERE followed by RETURNING', () => {
+      const [result] = identify('DELETE FROM users WHERE id = 1 RETURNING *', {
+        dialect: 'psql',
+      });
+      expect(result.where).to.equal(true);
+    });
+
+    it('should not set where on statements other than UPDATE and DELETE', () => {
+      const [select] = identify('SELECT * FROM users WHERE id = 1');
+      const [insert] = identify('INSERT INTO users (id) SELECT id FROM old WHERE id > 1');
+      expect(select.where).to.equal(undefined);
+      expect(insert.where).to.equal(undefined);
+    });
+
+    it('should not treat WHERE inside a string literal as a real WHERE', () => {
+      const [result] = identify("UPDATE users SET note = 'WHERE id = 1'");
+      expect(result.where).to.equal(false);
+    });
+
+    it('should not treat WHERE inside a comment as a real WHERE', () => {
+      const [line] = identify('DELETE FROM users -- WHERE id = 1');
+      const [block] = identify('DELETE FROM users /* WHERE id = 1 */');
+      expect(line.where).to.equal(false);
+      expect(block.where).to.equal(false);
+    });
+
+    it('should not treat a quoted identifier named where as a real WHERE', () => {
+      const [result] = identify('UPDATE users SET "where" = 1', { dialect: 'psql' });
+      expect(result.where).to.equal(false);
+    });
+
+    it('should not count LIMIT or TOP as a WHERE', () => {
+      const [limit] = identify('DELETE FROM users LIMIT 10', { dialect: 'mysql' });
+      const [top] = identify('DELETE TOP (10) FROM users', { dialect: 'mssql' });
+      expect(limit.where).to.equal(false);
+      expect(top.where).to.equal(false);
+    });
+
+    it('should set where=true for a multi-table DELETE with WHERE for mysql', () => {
+      const [result] = identify(
+        'DELETE u FROM users u JOIN bans b ON b.user_id = u.id WHERE b.active = 1',
+        { dialect: 'mysql' },
+      );
+      expect(result.where).to.equal(true);
+    });
+
+    it('should set where=true for DELETE ... USING with WHERE for psql', () => {
+      const [result] = identify('DELETE FROM users USING bans WHERE bans.user_id = users.id', {
+        dialect: 'psql',
+      });
+      expect(result.where).to.equal(true);
+    });
+
+    describe('top-level only (ignoring subqueries and CTEs)', () => {
+      it('should not treat a WHERE in a subquery in SET as a real WHERE', () => {
+        const [result] = identify(
+          'UPDATE users SET score = (SELECT max(score) FROM games WHERE games.user_id = 1)',
+        );
+        expect(result.where).to.equal(false);
+      });
+
+      it('should not treat a WHERE in a subquery in FROM as a real WHERE for psql', () => {
+        const [result] = identify(
+          'UPDATE users SET score = s.score FROM (SELECT user_id, score FROM games WHERE won) s',
+          { dialect: 'psql' },
+        );
+        expect(result.where).to.equal(false);
+      });
+
+      it('should set where=true when the WHERE itself holds a subquery', () => {
+        const [result] = identify(
+          'DELETE FROM users WHERE id IN (SELECT user_id FROM bans WHERE active = 1)',
+        );
+        expect(result.where).to.equal(true);
+      });
+
+      it('should not treat a WHERE in a CTE as a real WHERE', () => {
+        const [result] = identify(
+          'WITH old AS (SELECT id FROM users WHERE created < 1) DELETE FROM users',
+          { dialect: 'psql' },
+        );
+        expect(result.where).to.equal(false);
+      });
+
+      it('should set where=true for a DELETE after a CTE with its own WHERE', () => {
+        const [result] = identify(
+          'WITH old AS (SELECT id FROM users WHERE created < 1) DELETE FROM users WHERE id IN (SELECT id FROM old)',
+          { dialect: 'psql' },
+        );
+        expect(result.where).to.equal(true);
+      });
+    });
+
+    it('should detect WHERE for each statement on its own', () => {
+      const results = identify('DELETE FROM a; DELETE FROM b WHERE id = 1; UPDATE c SET x = (1)');
+      expect(results.map((result) => result.where)).to.eql([false, true, false]);
     });
   });
 

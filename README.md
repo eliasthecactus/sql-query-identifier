@@ -153,6 +153,21 @@ console.log(statements);
     1. `strict (bool)`: allow disable strict mode which will ignore unknown types *(default=true)*
     2. `dialect (string)`: Specify your database dialect, values: `generic`, `mysql`, `oracle`, `psql`, `sqlite`, `mssql`, `bigquery` and `dynamodb`. *(default=generic)*
 
+### Statement flags
+
+Some statement types carry flags about their own clauses. A clause inside a subquery or a CTE does not count.
+
+- `limit (bool)`, `offset (bool)`: on `SELECT`, whether it has a `LIMIT` (or `FETCH`, or `TOP` for `mssql`) and an `OFFSET`.
+- `where (bool)`: on `UPDATE` and `DELETE`, whether it has a `WHERE`. A `LIMIT` or `TOP` does not count, so `where: false` means the statement is not filtered by a condition.
+
+```js
+identify('DELETE FROM users WHERE id IN (SELECT id FROM bans WHERE active)');
+// [{ type: 'DELETE', executionType: 'MODIFICATION', where: true, ... }]
+
+identify('UPDATE users SET score = (SELECT max(score) FROM games WHERE won)');
+// [{ type: 'UPDATE', executionType: 'MODIFICATION', where: false, ... }]
+```
+
 ### DynamoDB (PartiQL)
 
 DynamoDB exposes a [PartiQL](https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/ql-reference.html)-compatible

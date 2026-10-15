@@ -572,6 +572,7 @@ function createUpdateStatementParser(options: ParseOptions) {
       },
       add: (token) => {
         statement.type = 'UPDATE';
+        statement.where = false;
         if (statement.start < 0) {
           statement.start = token.start;
         }
@@ -595,6 +596,7 @@ function createDeleteStatementParser(options: ParseOptions) {
       },
       add: (token) => {
         statement.type = 'DELETE';
+        statement.where = false;
         if (statement.start < 0) {
           statement.start = token.start;
         }
@@ -1173,12 +1175,23 @@ function stateMachineStatementParser(
         statement.parameters.push(token.value);
       }
 
-      if (statement.type === 'SELECT' && token.value === '(') {
+      if (statement.type?.match(/^(SELECT|UPDATE|DELETE)$/) && token.value === '(') {
         parensDepth++;
       }
 
-      if (statement.type === 'SELECT' && token.value === ')') {
+      if (statement.type?.match(/^(SELECT|UPDATE|DELETE)$/) && token.value === ')') {
         parensDepth--;
+      }
+
+      // Only a WHERE of the statement itself limits the rows it changes, not one in a
+      // subquery. A CTE's never reaches this parser.
+      if (
+        (statement.type === 'UPDATE' || statement.type === 'DELETE') &&
+        token.type === 'keyword' &&
+        token.value.toUpperCase() === 'WHERE' &&
+        parensDepth === 0
+      ) {
+        statement.where = true;
       }
 
       if (

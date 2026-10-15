@@ -93,6 +93,7 @@ const KEYWORDS = [
   'FETCH',
   'TOP',
   'ALL',
+  'WHERE',
 ];
 
 const SNOWFLAKE_KEYWORDS = [
