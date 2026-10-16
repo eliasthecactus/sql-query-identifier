@@ -1757,6 +1757,11 @@ describe('identifier', () => {
       expect(result.limit).to.equal(false);
     });
 
+    it('should not treat a column named limit as a real limit', () => {
+      const [result] = identify('SELECT t.limit FROM t', { dialect: 'psql' });
+      expect(result.limit).to.equal(false);
+    });
+
     describe('top-level only (ignoring subqueries and CTEs)', () => {
       it('should not set limit=true when LIMIT only appears in a subquery in FROM', () => {
         const [result] = identify('SELECT * FROM (SELECT * FROM tab1 LIMIT 10) AS sub');
@@ -1935,6 +1940,119 @@ describe('identifier', () => {
           'WITH old AS (SELECT id FROM users WHERE created < 1) DELETE FROM users WHERE id IN (SELECT id FROM old)',
           { dialect: 'psql' },
         );
+        expect(result.where).to.equal(true);
+      });
+    });
+
+    describe('keyword-like text that is not a WHERE', () => {
+      it('should not treat WHERE after a backslash-escaped quote as a real WHERE for mysql', () => {
+        const [single] = identify("UPDATE posts SET body = 'It\\'s where we live'", {
+          dialect: 'mysql',
+        });
+        const [double] = identify('UPDATE posts SET body = "It\\"s where we live"', {
+          dialect: 'mysql',
+        });
+        expect(single.where).to.equal(false);
+        expect(double.where).to.equal(false);
+      });
+
+      it('should not treat WHERE in an E string as a real WHERE for psql', () => {
+        const [result] = identify("UPDATE posts SET body = E'It\\'s where we live'", {
+          dialect: 'psql',
+        });
+        expect(result.where).to.equal(false);
+      });
+
+      it('should still see the WHERE after a plain string ending in a backslash for psql', () => {
+        const [result] = identify("UPDATE files SET path = 'C:\\' WHERE id = 1", {
+          dialect: 'psql',
+        });
+        expect(result.where).to.equal(true);
+      });
+
+      it('should not treat WHERE in a q-quoted string as a real WHERE for oracle', () => {
+        const [result] = identify("UPDATE posts SET body = q'[It's where we live]'", {
+          dialect: 'oracle',
+        });
+        expect(result.where).to.equal(false);
+      });
+
+      it('should not treat WHERE in a nested block comment as a real WHERE', () => {
+        const [psql] = identify('DELETE FROM users /* a /* b */ WHERE id = 1 */', {
+          dialect: 'psql',
+        });
+        const [mssql] = identify('DELETE FROM users /* a /* b */ WHERE id = 1 */', {
+          dialect: 'mssql',
+        });
+        expect(psql.where).to.equal(false);
+        expect(mssql.where).to.equal(false);
+      });
+
+      it('should not treat a column named where as a real WHERE', () => {
+        const [psql] = identify('UPDATE t SET x = t.where', { dialect: 'psql' });
+        const [mysql] = identify('UPDATE t SET x = t.where', { dialect: 'mysql' });
+        expect(psql.where).to.equal(false);
+        expect(mysql.where).to.equal(false);
+      });
+
+      it('should not treat a variable named where as a real WHERE for mssql', () => {
+        const [result] = identify('UPDATE t SET x = @where', { dialect: 'mssql' });
+        expect(result.where).to.equal(false);
+      });
+
+      it('should not treat a column named where with spaces around the dot as a real WHERE', () => {
+        const [result] = identify('UPDATE t SET a = u. where FROM u', { dialect: 'psql' });
+        expect(result.where).to.equal(false);
+      });
+
+      it('should still see the WHERE after a number with a trailing dot', () => {
+        const [result] = identify('UPDATE t SET a = 1. WHERE id = 1', { dialect: 'psql' });
+        expect(result.where).to.equal(true);
+      });
+
+      it('should still see a DELETE after a line comment ending in a dot', () => {
+        const [result] = identify('-- clean up.\nDELETE FROM users', { dialect: 'psql' });
+        expect(result.type).to.equal('DELETE');
+        expect(result.where).to.equal(false);
+      });
+
+      ['bigquery', 'snowflake'].forEach((dialect) => {
+        it(`should not let a backslash-escaped quote hide the next statement for ${dialect}`, () => {
+          const results = identify("DELETE FROM t WHERE name = 'O\\'Brien'; DELETE FROM audit", {
+            dialect: dialect as Dialect,
+          });
+          expect(results.map((result) => result.where)).to.eql([true, false]);
+        });
+      });
+    });
+
+    describe('statements without a semicolon between them', () => {
+      it('should not count the WHERE of the next statement for mssql', () => {
+        const [result] = identify('DELETE FROM users\nSELECT * FROM logs WHERE id = 1', {
+          dialect: 'mssql',
+        });
+        expect(result.where).to.equal(false);
+      });
+
+      it('should set where=false when an unfiltered statement follows for mssql', () => {
+        const [result] = identify('UPDATE a SET x = 1 WHERE id = 1\nDELETE FROM b', {
+          dialect: 'mssql',
+        });
+        expect(result.where).to.equal(false);
+      });
+
+      it('should still see the WHERE after a function named like a statement for mysql', () => {
+        const [result] = identify(
+          "UPDATE t SET price = TRUNCATE(price, 2), name = INSERT(name, 1, 1, 'x') WHERE id = 1",
+          { dialect: 'mysql' },
+        );
+        expect(result.where).to.equal(true);
+      });
+
+      it('should still see the WHERE after a table hint for mssql', () => {
+        const [result] = identify('DELETE FROM t WITH (TABLOCK) WHERE id = 1', {
+          dialect: 'mssql',
+        });
         expect(result.where).to.equal(true);
       });
     });

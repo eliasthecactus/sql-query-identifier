@@ -14,6 +14,22 @@ import type {
 import { ColumnParser } from './column-parser';
 import { TableParser } from './table-parser';
 
+// statement types whose LIMIT/OFFSET/WHERE flags only count outside parentheses
+const PARENS_TRACKED_TYPES = new Set(['SELECT', 'UPDATE', 'DELETE']);
+
+// keywords that can't appear at the top level of an UPDATE or DELETE, only start a new statement
+const NEXT_STATEMENT_KEYWORDS = new Set([
+  'SELECT',
+  'INSERT',
+  'UPDATE',
+  'DELETE',
+  'MERGE',
+  'TRUNCATE',
+  'CREATE',
+  'ALTER',
+  'DROP',
+]);
+
 interface StatementParser {
   addToken: (token: Token, nextToken: Token) => void;
   getStatement: () => Statement;
@@ -1026,6 +1042,7 @@ function stateMachineStatementParser(
 
   let openBlocks = 0;
   let parensDepth = 0;
+  let sawNextStatement = false;
 
   const columnParser = new ColumnParser(dialect);
   const tableParser = new TableParser(dialect);
@@ -1175,23 +1192,32 @@ function stateMachineStatementParser(
         statement.parameters.push(token.value);
       }
 
-      if (statement.type?.match(/^(SELECT|UPDATE|DELETE)$/) && token.value === '(') {
-        parensDepth++;
+      if (statement.type && PARENS_TRACKED_TYPES.has(statement.type)) {
+        if (token.value === '(') {
+          parensDepth++;
+        } else if (token.value === ')') {
+          parensDepth--;
+        }
       }
 
-      if (statement.type?.match(/^(SELECT|UPDATE|DELETE)$/) && token.value === ')') {
-        parensDepth--;
-      }
-
-      // Only a WHERE of the statement itself limits the rows it changes, not one in a
-      // subquery. A CTE's never reaches this parser.
       if (
         (statement.type === 'UPDATE' || statement.type === 'DELETE') &&
         token.type === 'keyword' &&
-        token.value.toUpperCase() === 'WHERE' &&
         parensDepth === 0
       ) {
-        statement.where = true;
+        const keyword = token.value.toUpperCase();
+        // Without a semicolon between them (fine in mssql), the next statement ends up in
+        // this one, and its WHERE would be counted as ours. Don't trust the flag then.
+        // INSERT( and TRUNCATE( are mysql functions, not statements.
+        if (NEXT_STATEMENT_KEYWORDS.has(keyword) && nextToken.value !== '(') {
+          sawNextStatement = true;
+          statement.where = false;
+        }
+        // Only a WHERE of the statement itself limits the rows it changes, not one in a
+        // subquery. A CTE's never reaches this parser.
+        if (keyword === 'WHERE' && !sawNextStatement) {
+          statement.where = true;
+        }
       }
 
       if (
